@@ -1,0 +1,5 @@
+name=AI Chat (Claude / ChatGPT / Gemini)
+id=AIChat
+description=Chatta con Claude, ChatGPT o Gemini (gratuito) direttamente in gioco. Premi F8 per aprire la finestra. L'IA può assegnare missioni ai personaggi, trascritte su fogli con carta e penna. Richiede il programma ponte "ai_bridge.py" in esecuzione sul tuo PC (vedi README).
+modversion=1.3.2
+versionMin=42.0
