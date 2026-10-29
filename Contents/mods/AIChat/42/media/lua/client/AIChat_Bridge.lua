@@ -22,6 +22,7 @@
         id=<numero>
         status=ok|error
         provider=<nome>
+        available=<provider configurati, separati da virgola>
         ---MISSIONS---
         assign|complete <TAB> Nome Personaggio <TAB> testo   (zero o più righe)
         ---TEXT---
@@ -74,6 +75,32 @@ end
 
 function AIChat.setProvider(name)
     AIChat.provider = name
+end
+
+-- Provider con la chiave configurata nel ponte (nil = non ancora noti)
+function AIChat.isAvailable(name)
+    if not AIChat.available or #AIChat.available == 0 then return true end
+    for _, p in ipairs(AIChat.available) do
+        if p == name then return true end
+    end
+    return false
+end
+
+-- Se il modello scelto non è configurato passa al primo disponibile
+local function useProvider(name)
+    if not name or name == "" or name == AIChat.provider then return end
+    AIChat.provider = name
+    notify("provider", name)
+end
+
+local function setAvailable(csv)
+    if csv == nil then return end   -- ponte vecchio: non lo dice
+    local list = {}
+    for p in csv:gmatch("[^,%s]+") do table.insert(list, p) end
+    AIChat.available = list
+    if #list > 0 and not AIChat.isAvailable(AIChat.provider) then
+        useProvider(list[1])
+    end
 end
 
 function AIChat.isBusy()
@@ -330,6 +357,11 @@ local function onTick()
     if resp and resp.id == AIChat.pending.id then
         local wasResume = AIChat.pending.resume
         AIChat.pending = nil
+        setAvailable(resp.available)
+        if resp.status == "ok" and resp.type ~= "resume" and not wasResume then
+            -- il ponte ha risposto con un altro modello perché quello scelto non ha la chiave
+            useProvider(resp.provider)
+        end
         if resp.status == "ok" and (resp.type == "resume" or wasResume) then
             notify("history", resp.text)
         elseif resp.status == "ok" then
