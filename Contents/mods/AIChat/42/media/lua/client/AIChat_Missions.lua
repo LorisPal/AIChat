@@ -9,6 +9,8 @@
     - Carta (foglio, taccuino o diario vuoto) e penna/matita possono stare
       nell'inventario, negli zaini o nei contenitori a portata di mano.
     - Ogni aggiornamento viene aggiunto in coda al foglio, mai sovrascritto.
+    - A ogni scrittura il foglio viene reimpaginato in automatico: anche un
+      foglio pieno viene ricompattato prima di passare a un foglio nuovo.
     - Se manca qualcosa la missione resta in attesa e viene trascritta appena
       carta e penna sono disponibili (la coda è salvata con il personaggio).
 ]]
@@ -351,15 +353,16 @@ function M.findTools(player, job)
         elseif W.isWritable(it) and not W.isLockedFor(it, me) then
             local owner, part = W.registryOf(it)
             if owner == key then
-                if W.isFull(it) then
-                    fullFound = true
-                elseif part > bestPart then
-                    sheet, bestPart = it, part
-                end
+                -- sempre l'ultimo foglio, anche se pieno: la scrittura lo ricompatta
+                if part > bestPart then sheet, bestPart = it, part end
             elseif not blank and W.isBlank(it) then
                 blank = it
             end
         end
+    end
+    -- ultimo foglio già ricompattato per questo lavoro senza spazio: serve un foglio nuovo
+    if sheet and job.fullSheets and job.fullSheets[tostring(sheet:getID())] then
+        sheet, fullFound = nil, true
     end
     return pen, sheet, blank, fullFound
 end
@@ -412,18 +415,6 @@ local function tryJob(player, job)
     end
 
     local pen, sheet, blank, fullFound = M.findTools(player, job)
-    if job.reflowItemId then
-        -- reimpaginazione di un foglio preciso: deve essere a portata di mano
-        sheet, blank = nil, nil
-        for _, it in ipairs(M.reachableItems(player)) do
-            if it:getID() == job.reflowItemId then sheet = it end
-        end
-        if not sheet then
-            removeJob(job)
-            say("error", "Il foglio da reimpaginare non è più a portata di mano.")
-            return "skip"
-        end
-    end
     local paper = sheet or blank
     log("trascrizione per " .. job.target .. ": penna=" .. tostring(pen ~= nil)
         .. " registro=" .. tostring(sheet and sheet:getName()) .. " vuoto=" .. tostring(blank and blank:getName())
@@ -487,19 +478,24 @@ function M.process()
     end
 end
 
-local function finishJob(job, remaining)
+local function squash(s)
+    return (tostring(s or ""):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""))
+end
+
+local function finishJob(job, item, remaining)
     job.busy = false
     if remaining == nil or remaining == "" then
         removeJob(job)
         say("system", "Foglio di " .. job.target .. " aggiornato.")
     else
-        -- foglio pieno: il resto andrà su un nuovo foglio
+        -- foglio pieno anche dopo la ricompattazione: il resto andrà su un nuovo foglio
         local t = target(job.target)
         -- job.part è già la parte più alta trovata (o t.part per un foglio vuoto)
         t.part = (job.part or 1) + 1
+        job.fullSheets = job.fullSheets or {}
+        job.fullSheets[tostring(item:getID())] = true
         -- se non è entrato nulla il testo resta com'era (niente "(segue)")
-        if remaining ~= job.text then job.text = "(segue) " .. remaining end
-        job.reflowItemId = nil
+        if squash(remaining) ~= squash(job.text) then job.text = "(segue) " .. remaining end
         say("system", "Il foglio di " .. job.target .. " è pieno: continuo su un nuovo foglio.")
     end
 end
@@ -519,7 +515,7 @@ function M.doWrite(job, item)
     local remaining = W.append(item, job.text, opts)
     if isClient() then W.sync(player, item) end
     log("scritto su " .. tostring(item:getName()) .. (remaining ~= "" and " (pieno, resta del testo)" or ""))
-    finishJob(job, remaining)
+    finishJob(job, item, remaining)
 end
 
 function M.onWriteInterrupted(job)
@@ -602,40 +598,6 @@ if ISUIWriteJournal then
         end
     end
 end
-
--- ---------------------------------------------------------------------------
--- Tasto destro su un registro missioni: "Reimpagina registro missioni"
--- ---------------------------------------------------------------------------
-
-function M.queueReflow(item)
-    local md = item:getModData()
-    local key, part = W.registryOf(item)
-    if not key then return end
-    local name = md.AIChatMissionName or M.resolveName(key)
-    nextJobId = nextJobId + 1
-    table.insert(M.data().queue, 1, {
-        id = "reflow-" .. tostring(nextJobId) .. "-" .. tostring(getTimestampMs()),
-        target = name,
-        text = "",
-        part = part,
-        reflowItemId = item:getID(),
-    })
-    say("system", "Reimpagino il foglio di " .. name .. "...")
-    M.process()
-end
-
-Events.OnFillInventoryObjectContextMenu.Add(function(playerNum, context, items)
-    pcall(function()
-        for _, entry in ipairs(items) do
-            local item = entry
-            if type(entry) == "table" and entry.items then item = entry.items[1] end
-            if item and W.isWritable(item) and W.registryOf(item) then
-                context:addOption("Reimpagina registro missioni", item, M.queueReflow)
-                return
-            end
-        end
-    end)
-end)
 
 -- Al caricamento nessun lavoro è in corso; poi riprova periodicamente
 Events.OnGameStart.Add(function()
