@@ -210,6 +210,8 @@ end
     Tutto il contenuto (vecchio + nuovo) viene impaginato per righe, così ogni
     pagina resta entro i limiti della finestra di scrittura del gioco. I fogli
     scritti con versioni precedenti della mod vengono sistemati qui.
+    Anche un registro segnato come pieno viene ricompattato: lo spazio liberato
+    accoglie il testo nuovo prima di passare a un foglio successivo.
 
     opts = { target = "Nome Cognome", part = 1, writer = "Nome scrivano", pageChars = n }
     Restituisce il testo che non è entrato (stringa vuota se è entrato tutto).
@@ -217,9 +219,6 @@ end
 function W.append(item, text, opts)
     local md = item:getModData()
     text = tostring(text or "")
-
-    -- registro già pieno: non riscrive nulla e restituisce tutto il testo
-    if text ~= "" and W.isFull(item) then return text end
 
     if not md.AIChatMissionTarget then
         -- registro riconosciuto solo dal nome: recupera i dati senza rifare l'intestazione
