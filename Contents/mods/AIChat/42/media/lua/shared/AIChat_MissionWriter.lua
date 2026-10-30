@@ -1,8 +1,8 @@
 --[[
     AIChat_MissionWriter.lua  (shared)
     Scrittura del testo delle missioni su fogli, taccuini e diari.
-    È usato in single player dal client e in multiplayer dal server,
-    così il contenuto del foglio viene salvato dove il gioco se lo aspetta.
+    Scrive sempre il client, come la scrittura normale del gioco; in multiplayer
+    W.sync invia poi il foglio aggiornato al server.
 
     Il testo viene sempre AGGIUNTO in coda alle pagine esistenti, mai sovrascritto.
 ]]
@@ -66,10 +66,29 @@ function W.isLockedFor(item, username)
     return owner ~= username
 end
 
+-- Di chi è questo registro? Restituisce (nome normalizzato, parte) o nil.
+-- In multiplayer i dati dell'oggetto scritti dal server possono non arrivare al
+-- client: in quel caso il registro si riconosce dal nome "Missioni - Nome (2)".
+function W.registryOf(item)
+    local md = item:getModData()
+    if md.AIChatMissionTarget then
+        return md.AIChatMissionTarget, tonumber(md.AIChatMissionPart) or 1
+    end
+    local ok, name = pcall(function() return item:getName() end)
+    if not ok or type(name) ~= "string" then return nil end
+    local prefix = W.TITLE_PREFIX
+    if name:sub(1, #prefix) ~= prefix then return nil end
+    local rest = trim(name:sub(#prefix + 1))
+    local who, part = rest:match("^(.-)%s*%((%d+)%)$")
+    if who and who ~= "" then return W.normName(who), tonumber(part) end
+    if rest ~= "" then return W.normName(rest), 1 end
+    return nil
+end
+
 -- Nessuna pagina scritta e non già usato come registro missioni
 function W.isBlank(item)
     if not W.isWritable(item) then return false end
-    if item:getModData().AIChatMissionTarget then return false end
+    if W.registryOf(item) then return false end
     for i = 1, W.pageCount(item) do
         if trim(W.getPage(item, i)) ~= "" then return false end
     end
@@ -183,6 +202,19 @@ function W.append(item, text, opts)
     local md = item:getModData()
     text = tostring(text or "")
 
+    -- registro già pieno: non riscrive nulla e restituisce tutto il testo
+    if md.AIChatMissionFull and text ~= "" then return text end
+
+    if not md.AIChatMissionTarget then
+        -- registro riconosciuto solo dal nome: recupera i dati senza rifare l'intestazione
+        local key, part = W.registryOf(item)
+        if key then
+            md.AIChatMissionTarget = key
+            md.AIChatMissionName   = trim(opts.target)
+            md.AIChatMissionPart   = part
+        end
+    end
+
     if not md.AIChatMissionTarget then
         md.AIChatMissionTarget = W.normName(opts.target)
         md.AIChatMissionName   = trim(opts.target)
@@ -257,14 +289,14 @@ function W.append(item, text, opts)
     local rest = {}
     for i = idx, #lines do table.insert(rest, lines[i]) end
     local remaining = W.unwrap(table.concat(rest, "\n")):gsub("^%s+", "")
-    if remaining ~= "" then
-        md.AIChatMissionFull = true
-    end
+    -- pieno solo se qualcosa non è davvero entrato (una reimpaginazione può liberare spazio)
+    md.AIChatMissionFull = (remaining ~= "") or nil
     return remaining
 end
 
--- Sincronizzazione in multiplayer (chiamata dal server dopo la scrittura)
+-- Sincronizzazione in multiplayer (chiamata dal client dopo la scrittura):
+-- syncItemFields invia al server nome, pagine e dati dell'oggetto, come fa il gioco
 function W.sync(player, item)
-    pcall(syncItemFields, player, item)
-    pcall(syncItemModData, player, item)
+    local ok, err = pcall(syncItemFields, player, item)
+    if not ok then print("[AIChat] sincronizzazione del foglio non riuscita: " .. tostring(err)) end
 end
