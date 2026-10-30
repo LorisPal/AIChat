@@ -14,6 +14,8 @@ AIChatWindow = ISCollapsableWindow:derive("AIChatWindow")
 AIChatWindow.instance = nil
 AIChatWindow.TOGGLE_KEY = Keyboard.KEY_F8
 AIChatWindow.MAX_LOG = 60   -- messaggi conservati nella finestra
+AIChatWindow.MIN_W = 420
+AIChatWindow.MIN_H = 250
 
 local PROVIDERS = {
     { id = "claude", label = "Claude" },
@@ -47,7 +49,10 @@ function AIChatWindow:new(x, y, w, h)
     setmetatable(o, self)
     self.__index = self
     o.title = "AI Chat"
-    o.resizable = false
+    -- ridimensionabile trascinando l'angolo in basso a destra (widget del gioco base)
+    o.resizable = true
+    o.minimumWidth = AIChatWindow.MIN_W
+    o.minimumHeight = AIChatWindow.MIN_H
     o.log = {}
     return o
 end
@@ -59,6 +64,8 @@ function AIChatWindow:createChildren()
     local th = self:titleBarHeight()
     local btnH = 24
     local entryH = 26
+    -- lascia libero il bordo inferiore, dove si trova la maniglia di ridimensionamento
+    local bottom = math.max(pad, self:resizeWidgetHeight() + 2)
 
     -- Riga superiore: provider, contesto, reset
     local topY = th + pad
@@ -74,14 +81,18 @@ function AIChatWindow:createChildren()
 
     self.resetBtn = ISButton:new(self.width - pad - 90, topY, 90, btnH, "Nuova chat", self, AIChatWindow.onReset)
     self.resetBtn:initialise()
+    self.resetBtn.anchorLeft = false
+    self.resetBtn.anchorRight = true
     self:addChild(self.resetBtn)
 
     -- Area messaggi
     local logY = topY + btnH + pad
-    local logH = self.height - logY - entryH - pad * 2
+    local logH = self.height - logY - entryH - pad - bottom
     self.logPanel = ISRichTextPanel:new(pad, logY, self.width - pad * 2, logH)
     self.logPanel:initialise()
     self.logPanel.autosetheight = false
+    self.logPanel.anchorRight = true
+    self.logPanel.anchorBottom = true
     self.logPanel.clip = true
     self.logPanel.background = true
     self.logPanel.backgroundColor = { r = 0, g = 0, b = 0, a = 0.6 }
@@ -89,9 +100,12 @@ function AIChatWindow:createChildren()
     self:addChild(self.logPanel)
 
     -- Campo di testo + invio
-    local entryY = self.height - entryH - pad
+    local entryY = self.height - entryH - bottom
     self.entry = ISTextEntryBox:new("", pad, entryY, self.width - pad * 3 - 80, entryH)
     self.entry:initialise()
+    self.entry.anchorRight = true
+    self.entry.anchorTop = false
+    self.entry.anchorBottom = true
     self.entry:instantiate()
     self.entry.window = self
     self.entry.onCommandEntered = AIChatWindow.onEntryEnter
@@ -99,6 +113,10 @@ function AIChatWindow:createChildren()
 
     self.sendBtn = ISButton:new(self.width - pad - 80, entryY, 80, entryH, "Invia", self, AIChatWindow.onSend)
     self.sendBtn:initialise()
+    self.sendBtn.anchorLeft = false
+    self.sendBtn.anchorRight = true
+    self.sendBtn.anchorTop = false
+    self.sendBtn.anchorBottom = true
     self:addChild(self.sendBtn)
 
     self:updateProviderButton()
@@ -197,11 +215,24 @@ function AIChatWindow:onReset()
     end
 end
 
+-- dopo un ridimensionamento il testo viene reimpaginato: torna all'ultimo messaggio
+function AIChatWindow:onResize()
+    ISCollapsableWindow.onResize(self)
+    if self.logPanel and not self.isCollapsed then
+        self.logPanel.textDirty = true
+        self.scrollToBottom = true
+    end
+end
+
 function AIChatWindow:update()
     ISCollapsableWindow.update(self)
     if self.resetArmedAt and getTimestampMs() - self.resetArmedAt >= 4000 then
         self.resetArmedAt = nil
         self.resetBtn:setTitle("Nuova chat")
+    end
+    if self.scrollToBottom then
+        self.scrollToBottom = false
+        self:refreshLog()
     end
 end
 
@@ -239,7 +270,8 @@ function AIChatWindow.toggle()
         AIChatWindow.instance:close()
         return
     end
-    local w, h = 520, 420
+    local w = AIChatWindow.savedWidth or 520
+    local h = AIChatWindow.savedHeight or 420
     local x = getCore():getScreenWidth() - w - 40
     local y = 80
     local win = AIChatWindow:new(x, y, w, h)
@@ -264,6 +296,10 @@ end
 local originalClose = AIChatWindow.close
 function AIChatWindow:close()
     AIChatWindow.savedLog = self.log
+    if not self.isCollapsed then
+        AIChatWindow.savedWidth = self.width
+        AIChatWindow.savedHeight = self.height
+    end
     originalClose(self)
 end
 
