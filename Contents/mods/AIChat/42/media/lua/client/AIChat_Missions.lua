@@ -351,7 +351,7 @@ function M.findTools(player, job)
         elseif W.isWritable(it) and not W.isLockedFor(it, me) then
             local owner, part = W.registryOf(it)
             if owner == key then
-                if it:getModData().AIChatMissionFull then
+                if W.isFull(it) then
                     fullFound = true
                 elseif part > bestPart then
                     sheet, bestPart = it, part
@@ -495,7 +495,8 @@ local function finishJob(job, remaining)
     else
         -- foglio pieno: il resto andrà su un nuovo foglio
         local t = target(job.target)
-        t.part = math.max(t.part or 1, job.part or 1) + 1
+        -- job.part è già la parte più alta trovata (o t.part per un foglio vuoto)
+        t.part = (job.part or 1) + 1
         -- se non è entrato nulla il testo resta com'era (niente "(segue)")
         if remaining ~= job.text then job.text = "(segue) " .. remaining end
         job.reflowItemId = nil

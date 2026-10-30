@@ -47,8 +47,12 @@ function W.isWritable(item)
     return ok and res == true
 end
 
+-- Pagine scrivibili (getPageToWrite); getNumberOfPages è per la lettura dei
+-- libri e vale -1 per fogli e taccuini
 function W.pageCount(item)
-    local ok, n = pcall(function() return item:getNumberOfPages() end)
+    local ok, n = pcall(function() return item:getPageToWrite() end)
+    if ok and n and n >= 1 then return n end
+    ok, n = pcall(function() return item:getNumberOfPages() end)
     if ok and n and n >= 1 then return n end
     return 1
 end
@@ -83,6 +87,18 @@ function W.registryOf(item)
     if who and who ~= "" then return W.normName(who), tonumber(part) end
     if rest ~= "" then return W.normName(rest), 1 end
     return nil
+end
+
+-- Registro davvero pieno? Un registro pieno ha sempre l'ultima pagina scritta:
+-- se è vuota il segno "pieno" è vecchio (es. pagine contate male) e si toglie
+function W.isFull(item)
+    local md = item:getModData()
+    if not md.AIChatMissionFull then return false end
+    if trim(W.getPage(item, W.pageCount(item))) == "" then
+        md.AIChatMissionFull = nil
+        return false
+    end
+    return true
 end
 
 -- Nessuna pagina scritta e non già usato come registro missioni
@@ -203,7 +219,7 @@ function W.append(item, text, opts)
     text = tostring(text or "")
 
     -- registro già pieno: non riscrive nulla e restituisce tutto il testo
-    if md.AIChatMissionFull and text ~= "" then return text end
+    if text ~= "" and W.isFull(item) then return text end
 
     if not md.AIChatMissionTarget then
         -- registro riconosciuto solo dal nome: recupera i dati senza rifare l'intestazione
