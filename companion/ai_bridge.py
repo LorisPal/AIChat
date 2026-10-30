@@ -182,7 +182,7 @@ def parse_request(raw):
     return req if req.get("id") else None
 
 
-def write_response(lua_dir, req_id, status, provider, text, missions=(), kind="chat"):
+def write_response(lua_dir, req_id, status, provider, text, missions=(), kind="chat", available=()):
     # righe: tipo <TAB> nome <TAB> testo <TAB> numero missione (se noto)
     mission_lines = "".join(
         "\t".join(str(field).replace("\t", " ") for field in ev) + "\n" for ev in missions
@@ -192,6 +192,8 @@ def write_response(lua_dir, req_id, status, provider, text, missions=(), kind="c
         f"status={status}\n"
         f"provider={provider}\n"
         f"type={kind}\n"
+        # provider con la chiave configurata: il gioco salta gli altri
+        f"available={','.join(available)}\n"
         "---MISSIONS---\n"
         f"{mission_lines}"
         "---TEXT---\n"
@@ -382,6 +384,14 @@ def ask_test(cfg, system, history):
 
 PROVIDERS = {"claude": ask_claude, "openai": ask_openai, "gemini": ask_gemini}
 PROVIDER_NAMES = {"claude": "Claude", "openai": "ChatGPT", "gemini": "Gemini"}
+PROVIDER_KEYS = {"claude": "anthropic_api_key", "openai": "openai_api_key", "gemini": "gemini_api_key"}
+
+
+def available_providers(cfg, test_mode=False):
+    """Provider con una chiave in config.json (in modalità test vanno tutti bene)."""
+    if test_mode:
+        return list(PROVIDERS)
+    return [p for p, k in PROVIDER_KEYS.items() if cfg.get(k)]
 
 
 def _gemini_model_recovery(first_error, cfg, system, history, max_tries=4):
@@ -606,6 +616,7 @@ class Bridge:
         self.last_id = None
         self.language = cfg.get("language", "italiano")
         self.system = SYSTEM_PROMPT.format(language=self.language)
+        self.available = available_providers(cfg, test_mode)
         folder = cfg.get("stories_dir") or ""
         self.stories_dir = Path(folder) if folder else Path(__file__).with_name("storie")
         self.stories_dir.mkdir(parents=True, exist_ok=True)
@@ -668,12 +679,19 @@ class Bridge:
                 text = story.recap()
             else:
                 text = "Nessuna storia salvata per questo personaggio: ne inizia una nuova."
-            write_response(self.lua_dir, req["id"], "ok", provider, text, kind="resume")
+            write_response(self.lua_dir, req["id"], "ok", provider, text, kind="resume",
+                           available=self.available)
             return
 
-        if provider not in PROVIDERS:
-            write_response(self.lua_dir, req["id"], "error", provider, f"Provider sconosciuto: {provider}")
-            return
+        if provider not in self.available:
+            if not self.available:
+                write_response(self.lua_dir, req["id"], "error", provider,
+                               "Nessuna chiave API configurata: compila config.json e riavvia il ponte.")
+                return
+            # modello senza chiave: risponde il primo configurato invece di dare errore
+            fallback = self.available[0]
+            print(f"[i] {PROVIDER_NAMES.get(provider, provider)} non configurato: uso {PROVIDER_NAMES[fallback]}")
+            provider = fallback
 
         message = req["message"]
         content = message
@@ -690,7 +708,7 @@ class Bridge:
                                     story.api_messages(content)).strip() or "(risposta vuota)"
         except Exception as e:  # noqa: BLE001 - qualsiasi errore va mostrato in gioco
             story.history.pop()  # la domanda non ha avuto risposta
-            write_response(self.lua_dir, req["id"], "error", provider, str(e))
+            write_response(self.lua_dir, req["id"], "error", provider, str(e), available=self.available)
             print(f"[!] {e}")
             return
 
@@ -699,7 +717,7 @@ class Bridge:
         missions = story.number_missions(missions)
         if missions and not shown:
             shown = "Missione registrata."
-        write_response(self.lua_dir, req["id"], "ok", provider, shown, missions)
+        write_response(self.lua_dir, req["id"], "ok", provider, shown, missions, available=self.available)
 
         story.log(f"{stamp} {who}: {message}")
         story.log(f"{stamp} {name}: {shown}")
@@ -790,13 +808,13 @@ def main():
 
     cfg = load_config()
     if not args.test:
-        keys = (("Claude", "anthropic_api_key"), ("ChatGPT", "openai_api_key"), ("Gemini", "gemini_api_key"))
-        missing = [n for n, k in keys if not cfg.get(k)]
-        if len(missing) == len(keys):
+        available = available_providers(cfg)
+        if not available:
             print("[!] Nessuna chiave API configurata. Compila config.json (vedi config.example.json).")
             sys.exit(1)
-        for name in missing:
-            print(f"[i] {name} non configurato: in gioco darà errore se selezionato.")
+        for p in PROVIDERS:
+            if p not in available:
+                print(f"[i] {PROVIDER_NAMES[p]} non configurato: in gioco verrà saltato.")
 
     try:
         Bridge(lua_dir, cfg, test_mode=args.test).run()

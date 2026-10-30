@@ -27,7 +27,6 @@ M.MAX_ACTIVE_IN_CONTEXT = 30 -- missioni attive inviate all'IA
 
 local retryCounter = 0
 local nextJobId = 0
-local mpWaiting = {}         -- jobId -> job, in attesa di conferma dal server
 
 local function say(kind, text)
     AIChat.notify(kind, text)
@@ -133,7 +132,17 @@ local function gameStamp()
     return "?"
 end
 
+local function log(text)
+    print("[AIChat] " .. tostring(text))
+end
+
 local function enqueue(name, line)
+    -- le missioni già in attesa per questo personaggio avvisano di nuovo
+    -- (altrimenti quella nuova resterebbe in coda senza spiegazioni)
+    local key = W.normName(name)
+    for _, job in ipairs(M.data().queue) do
+        if W.normName(job.target) == key then job.warned = nil end
+    end
     nextJobId = nextJobId + 1
     table.insert(M.data().queue, {
         id = tostring(nextJobId) .. "-" .. tostring(getTimestampMs and getTimestampMs() or 0),
@@ -160,7 +169,7 @@ function M.highestNumber(name)
         local ok, items = pcall(M.reachableItems, player)
         if ok and items then
             for _, it in ipairs(items) do
-                if W.isWritable(it) and it:getModData().AIChatMissionTarget == key then
+                if W.isWritable(it) and W.registryOf(it) == key then
                     local n = W.maxMissionNumber(it)
                     if n > best then best = n end
                 end
@@ -333,17 +342,18 @@ end
 function M.findTools(player, job)
     local me = username(player)
     local key = W.normName(job.target)
-    local pen, sheet, blank
+    local pen, sheet, blank, fullFound
     local bestPart = -1
 
     for _, it in ipairs(M.reachableItems(player)) do
         if not pen and M.isPen(it) then
             pen = it
         elseif W.isWritable(it) and not W.isLockedFor(it, me) then
-            local md = it:getModData()
-            if md.AIChatMissionTarget == key then
-                local part = md.AIChatMissionPart or 1
-                if not md.AIChatMissionFull and part > bestPart then
+            local owner, part = W.registryOf(it)
+            if owner == key then
+                if W.isFull(it) then
+                    fullFound = true
+                elseif part > bestPart then
                     sheet, bestPart = it, part
                 end
             elseif not blank and W.isBlank(it) then
@@ -351,7 +361,7 @@ function M.findTools(player, job)
             end
         end
     end
-    return pen, sheet, blank
+    return pen, sheet, blank, fullFound
 end
 
 local function isIlliterate(player)
@@ -401,7 +411,7 @@ local function tryJob(player, job)
         return "stop"
     end
 
-    local pen, sheet, blank = M.findTools(player, job)
+    local pen, sheet, blank, fullFound = M.findTools(player, job)
     if job.reflowItemId then
         -- reimpaginazione di un foglio preciso: deve essere a portata di mano
         sheet, blank = nil, nil
@@ -415,11 +425,17 @@ local function tryJob(player, job)
         end
     end
     local paper = sheet or blank
+    log("trascrizione per " .. job.target .. ": penna=" .. tostring(pen ~= nil)
+        .. " registro=" .. tostring(sheet and sheet:getName()) .. " vuoto=" .. tostring(blank and blank:getName())
+        .. " pieno=" .. tostring(fullFound == true))
     if not pen or not paper then
         if not job.warned then
             job.warned = true
             local missing = {}
-            if not paper then table.insert(missing, "un foglio, taccuino o diario vuoto") end
+            if not paper then
+                table.insert(missing, (fullFound and "un nuovo foglio, taccuino o diario vuoto (il registro attuale è pieno)")
+                    or "un foglio, taccuino o diario vuoto")
+            end
             if not pen then table.insert(missing, "una penna o matita") end
             say("error", "Per trascrivere la missione di " .. job.target .. " serve "
                 .. table.concat(missing, " e ")
@@ -428,7 +444,10 @@ local function tryJob(player, job)
         return pen and "wait" or "stop"
     end
 
-    if not sheet then
+    if sheet then
+        local _, part = W.registryOf(sheet)
+        job.part = part
+    else
         local t = target(job.target)
         job.part = t.part or 1
     end
@@ -450,12 +469,9 @@ function M.process()
     if #queue == 0 or not playerIsIdle(player) then return end
 
     for _, job in ipairs(queue) do
-        if job.busy then
-            -- personaggio fermo ma lavoro ancora "in corso": l'azione è stata annullata
-            -- (es. trasferimento fallito). Se non stiamo aspettando il server, riprova.
-            if mpWaiting[job.id] then return end
-            job.busy = false
-        end
+        -- personaggio fermo ma lavoro ancora "in corso": l'azione è stata annullata
+        -- (es. trasferimento fallito), quindi si riprova
+        job.busy = false
     end
 
     local snapshot = {}
@@ -479,8 +495,10 @@ local function finishJob(job, remaining)
     else
         -- foglio pieno: il resto andrà su un nuovo foglio
         local t = target(job.target)
-        t.part = (t.part or 1) + 1
-        job.text = "(segue) " .. remaining
+        -- job.part è già la parte più alta trovata (o t.part per un foglio vuoto)
+        t.part = (job.part or 1) + 1
+        -- se non è entrato nulla il testo resta com'era (niente "(segue)")
+        if remaining ~= job.text then job.text = "(segue) " .. remaining end
         job.reflowItemId = nil
         say("system", "Il foglio di " .. job.target .. " è pieno: continuo su un nuovo foglio.")
     end
@@ -496,16 +514,12 @@ function M.doWrite(job, item)
     }
     local lay = M.layout()
     opts.lineWidth, opts.lines, opts.pageChars = lay.lineWidth, lay.lines, lay.pageChars
-    if isClient() then
-        mpWaiting[job.id] = job
-        sendClientCommand(player, "AIChat", "writeMission", {
-            jobId = job.id, itemId = item:getID(), text = job.text,
-            target = opts.target, part = opts.part, writer = opts.writer,
-            pageChars = opts.pageChars, lineWidth = opts.lineWidth, lines = opts.lines,
-        })
-    else
-        finishJob(job, W.append(item, job.text, opts))
-    end
+    -- come la scrittura normale del gioco: si scrive sull'oggetto del client e in
+    -- multiplayer si invia al server (nome, pagine e dati dell'oggetto)
+    local remaining = W.append(item, job.text, opts)
+    if isClient() then W.sync(player, item) end
+    log("scritto su " .. tostring(item:getName()) .. (remaining ~= "" and " (pieno, resta del testo)" or ""))
+    finishJob(job, remaining)
 end
 
 function M.onWriteInterrupted(job)
@@ -595,16 +609,18 @@ end
 
 function M.queueReflow(item)
     local md = item:getModData()
-    if not md.AIChatMissionTarget then return end
+    local key, part = W.registryOf(item)
+    if not key then return end
+    local name = md.AIChatMissionName or M.resolveName(key)
     nextJobId = nextJobId + 1
     table.insert(M.data().queue, 1, {
         id = "reflow-" .. tostring(nextJobId) .. "-" .. tostring(getTimestampMs()),
-        target = md.AIChatMissionName or md.AIChatMissionTarget,
+        target = name,
         text = "",
-        part = md.AIChatMissionPart or 1,
+        part = part,
         reflowItemId = item:getID(),
     })
-    say("system", "Reimpagino il foglio di " .. (md.AIChatMissionName or md.AIChatMissionTarget) .. "...")
+    say("system", "Reimpagino il foglio di " .. name .. "...")
     M.process()
 end
 
@@ -613,26 +629,12 @@ Events.OnFillInventoryObjectContextMenu.Add(function(playerNum, context, items)
         for _, entry in ipairs(items) do
             local item = entry
             if type(entry) == "table" and entry.items then item = entry.items[1] end
-            if item and W.isWritable(item) and item:getModData().AIChatMissionTarget then
+            if item and W.isWritable(item) and W.registryOf(item) then
                 context:addOption("Reimpagina registro missioni", item, M.queueReflow)
                 return
             end
         end
     end)
-end)
-
--- Risposta del server in multiplayer
-Events.OnServerCommand.Add(function(module, command, args)
-    if module ~= "AIChat" or command ~= "writeResult" or not args then return end
-    local job = mpWaiting[args.jobId]
-    if not job then return end
-    mpWaiting[args.jobId] = nil
-    if args.ok then
-        finishJob(job, args.remaining)
-    else
-        job.busy = false
-        say("error", "Il server non ha potuto scrivere sul foglio: " .. tostring(args.reason or "?"))
-    end
 end)
 
 -- Al caricamento nessun lavoro è in corso; poi riprova periodicamente

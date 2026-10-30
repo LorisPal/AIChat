@@ -1,8 +1,8 @@
 --[[
     AIChat_WriteAction.lua
     Azione a tempo: il personaggio scrive la missione sul foglio.
-    In single player scrive direttamente; in multiplayer chiede al server
-    di farlo (vedi server/AIChat_Server.lua), così il foglio resta sincronizzato.
+    Scrive direttamente sull'oggetto; in multiplayer il foglio viene poi
+    sincronizzato con il server (vedi AIChat_MissionWriter.lua, W.sync).
 ]]
 
 require "TimedActions/ISBaseTimedAction"

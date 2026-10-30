@@ -162,10 +162,20 @@ end
 
 function AIChatWindow:onToggleProvider()
     if AIChat.isBusy() then return end
-    local nextId = PROVIDERS[1].id
-    for i, p in ipairs(PROVIDERS) do
+    -- solo i modelli con la chiave configurata nel ponte
+    local usable = {}
+    for _, p in ipairs(PROVIDERS) do
+        if AIChat.isAvailable(p.id) then table.insert(usable, p) end
+    end
+    if #usable <= 1 then
+        self:addLine("system", "È configurato solo " .. providerLabel(AIChat.provider) ..
+            ": aggiungi altre chiavi API in config.json per cambiare modello.")
+        return
+    end
+    local nextId = usable[1].id
+    for i, p in ipairs(usable) do
         if p.id == AIChat.provider then
-            nextId = PROVIDERS[(i % #PROVIDERS) + 1].id
+            nextId = usable[(i % #usable) + 1].id
         end
     end
     AIChat.setProvider(nextId)
@@ -260,6 +270,13 @@ end
 AIChat.addListener(function(kind, text, extra)
     if kind == "missions" then return end   -- gestite da AIChat_Missions.lua
     local win = AIChatWindow.instance
+    if kind == "provider" then
+        if win then
+            win:updateProviderButton()
+            win:addLine("system", "Il modello scelto non ha la chiave API configurata: uso " .. providerLabel(text) .. ".")
+        end
+        return
+    end
     if win then
         win:addLine(kind, text, extra)
     elseif kind == "reply" or kind == "error" then
